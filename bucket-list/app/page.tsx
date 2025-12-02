@@ -1,284 +1,223 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { TraditionCard } from "@/components/tradition-card";
 import { AddCustomTradition } from "@/components/add-custom-tradition";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Trophy, Users, Plus, Target, Star, LogIn, LogOut, AlertTriangle } from "lucide-react";
 import { LoginDialog } from "@/components/login-dialog";
-
-interface Tradition {
-  id: string;
-  name: string;
-  description: string;
-  averageRating: number;
-  totalRatings: number;
-  averageDifficulty: number;
-  totalDifficultyRatings: number;
-  completions: number;
-}
+import type { TraditionWithStats, User } from "@/lib/types";
+import {
+  getTraditionsWithStats,
+  getOrCreateUser,
+  getUserCompletions,
+  getUserRatings,
+  getUserDifficultyRatings,
+  toggleCompletion,
+  submitRating,
+  submitDifficultyRating,
+  createTradition,
+} from "@/lib/api";
 
 export default function Home() {
-  // Mock data - in real app, this would come from Supabase
-  const [traditions, setTraditions] = useState<Tradition[]>([
-    {
-      id: "1",
-      name: "Climb Baldwin",
-      description: "Climb up the exterior of the Baldwin Auditorium building, a legendary unofficial requirement that many Duke students attempt.",
-      averageRating: 0,
-      totalRatings: 0,
-      averageDifficulty: 0,
-      totalDifficultyRatings: 0,
-      completions: 0,
-    },
-    {
-      id: "2",
-      name: "Go in the Tunnels",
-      description: "Explore the underground tunnel system that connects various buildings across Duke's campus. A staple of Duke lore.",
-      averageRating: 0,
-      totalRatings: 0,
-      averageDifficulty: 0,
-      totalDifficultyRatings: 0,
-      completions: 0,
-    },
-    {
-      id: "3",
-      name: "Sex in the Stacks",
-      description: "Have intimate relations among the bookshelves at Perkins Library. An infamously whispered about Duke tradition.",
-      averageRating: 0,
-      totalRatings: 0,
-      averageDifficulty: 0,
-      totalDifficultyRatings: 0,
-      completions: 0,
-    },
-    {
-      id: "4",
-      name: "Sex in the Gardens",
-      description: "Have intimate relations in the Sarah P. Duke Gardens. Another whispered unofficial graduation requirement.",
-      averageRating: 0,
-      totalRatings: 0,
-      averageDifficulty: 0,
-      totalDifficultyRatings: 0,
-      completions: 0,
-    },
-    {
-      id: "5",
-      name: "Drive Around Backward Around C1 Loop",
-      description: "Drive or ride around the C1 campus bus route in reverse - a quirky tradition some Duke students attempt.",
-      averageRating: 0,
-      totalRatings: 0,
-      averageDifficulty: 0,
-      totalDifficultyRatings: 0,
-      completions: 0,
-    },
-  ]);
-
-  const [completedTraditions, setCompletedTraditions] = useState<Set<string>>(new Set());
-  const [userRatings, setUserRatings] = useState<Record<string, number>>({});
+  const [traditions, setTraditions] = useState<TraditionWithStats[]>([]);
   const [showAddDialog, setShowAddDialog] = useState(false);
-  const [nextId, setNextId] = useState(6);
-  const [currentUser, setCurrentUser] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUsername, setCurrentUsername] = useState<string | null>(null);
   const [showLoginDialog, setShowLoginDialog] = useState(false);
-  // Track which traditions each user has rated: { userId: { traditionId: rating } }
-  const [userTraditionRatings, setUserTraditionRatings] = useState<Record<string, Record<string, number>>>({});
-  // Track which traditions each user has rated for difficulty: { userId: { traditionId: difficulty } }
-  const [userTraditionDifficultyRatings, setUserTraditionDifficultyRatings] = useState<Record<string, Record<string, number>>>({});
-  // Track which traditions each user has completed: { userId: Set<traditionId> }
-  const [userCompletedTraditions, setUserCompletedTraditions] = useState<Record<string, Set<string>>>({});
+  const [loading, setLoading] = useState(true);
+  // Track which traditions the current user has rated
+  const [userTraditionRatings, setUserTraditionRatings] = useState<Record<string, number>>({});
+  // Track which traditions the current user has rated for difficulty
+  const [userTraditionDifficultyRatings, setUserTraditionDifficultyRatings] = useState<Record<string, number>>({});
+  // Track which traditions the current user has completed
+  const [userCompletedTraditions, setUserCompletedTraditions] = useState<Set<string>>(new Set());
 
-  const handleComplete = (id: string) => {
+  // Load traditions on mount
+  useEffect(() => {
+    loadTraditions();
+  }, []);
+
+  // Load user data when user logs in
+  useEffect(() => {
+    if (currentUser) {
+      loadUserData();
+    } else {
+      // Clear user data on logout
+      setUserTraditionRatings({});
+      setUserTraditionDifficultyRatings({});
+      setUserCompletedTraditions(new Set());
+    }
+  }, [currentUser]);
+
+  const loadTraditions = async () => {
+    setLoading(true);
+    try {
+      const data = await getTraditionsWithStats();
+      setTraditions(data);
+    } catch (error) {
+      console.error('Error loading traditions:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadUserData = async () => {
+    if (!currentUser) return;
+
+    try {
+      const [completions, ratings, difficultyRatings] = await Promise.all([
+        getUserCompletions(currentUser.id),
+        getUserRatings(currentUser.id),
+        getUserDifficultyRatings(currentUser.id),
+      ]);
+
+      setUserCompletedTraditions(completions);
+      setUserTraditionRatings(ratings);
+      setUserTraditionDifficultyRatings(difficultyRatings);
+    } catch (error) {
+      console.error('Error loading user data:', error);
+    }
+  };
+
+  const handleComplete = async (id: string) => {
     // Require login to mark traditions as completed
     if (!currentUser) {
       setShowLoginDialog(true);
       return;
     }
 
-    // Get user's completed traditions
-    const userCompleted = userCompletedTraditions[currentUser] || new Set<string>();
-    const wasCompleted = userCompleted.has(id);
+    const wasCompleted = userCompletedTraditions.has(id);
     
-    // Update user's completed traditions
-    const newUserCompleted = new Set(userCompleted);
-    if (wasCompleted) {
-      newUserCompleted.delete(id);
-    } else {
-      newUserCompleted.add(id);
-    }
-    setUserCompletedTraditions(prev => ({
-      ...prev,
-      [currentUser]: newUserCompleted,
-    }));
-
-    // Also update global completed set for backward compatibility
-    const newCompleted = new Set(completedTraditions);
+    // Optimistically update UI
+    const newCompleted = new Set(userCompletedTraditions);
     if (wasCompleted) {
       newCompleted.delete(id);
     } else {
       newCompleted.add(id);
     }
-    setCompletedTraditions(newCompleted);
+    setUserCompletedTraditions(newCompleted);
 
-    // Update the completions count for the tradition
-    setTraditions((prev) =>
-      prev.map((t) => {
-        if (t.id === id) {
-          return {
-            ...t,
-            completions: wasCompleted ? Math.max(0, t.completions - 1) : t.completions + 1,
-          };
-        }
-        return t;
-      })
-    );
+    // Update backend
+    const success = await toggleCompletion(currentUser.id, id, wasCompleted);
+    
+    if (!success) {
+      // Revert on error
+      setUserCompletedTraditions(userCompletedTraditions);
+      alert('Failed to update completion. Please try again.');
+      return;
+    }
+
+    // Reload traditions to get updated stats
+    await loadTraditions();
   };
 
-  const handleLogin = (username: string) => {
-    setCurrentUser(username);
-    // Initialize user's rating record if it doesn't exist
-    if (!userTraditionRatings[username]) {
-      setUserTraditionRatings(prev => ({ ...prev, [username]: {} }));
-    }
-    // Initialize user's difficulty rating record if it doesn't exist
-    if (!userTraditionDifficultyRatings[username]) {
-      setUserTraditionDifficultyRatings(prev => ({ ...prev, [username]: {} }));
-    }
-    // Initialize user's completed traditions if it doesn't exist
-    if (!userCompletedTraditions[username]) {
-      setUserCompletedTraditions(prev => ({ ...prev, [username]: new Set<string>() }));
+  const handleLogin = async (username: string) => {
+    try {
+      const user = await getOrCreateUser(username);
+      if (user) {
+        setCurrentUser(user);
+        setCurrentUsername(username);
+      } else {
+        alert('Failed to login. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error logging in:', error);
+      alert('Failed to login. Please try again.');
     }
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
+    setCurrentUsername(null);
   };
 
-  const handleRate = (id: string, rating: number) => {
+  const handleRate = async (id: string, rating: number) => {
     if (!currentUser) return;
     
     // Check if user has completed this tradition
-    const userCompleted = userCompletedTraditions[currentUser] || new Set<string>();
-    if (!userCompleted.has(id)) {
+    if (!userCompletedTraditions.has(id)) {
       // User hasn't completed this tradition, don't allow rating
       return;
     }
     
     // Check if user has already rated this tradition
-    const userRatingsForUser = userTraditionRatings[currentUser] || {};
-    if (userRatingsForUser[id] !== undefined) {
+    if (userTraditionRatings[id] !== undefined) {
       // User has already rated, don't allow duplicate rating
       return;
     }
 
-    // Store the rating for this user
-    setUserTraditionRatings(prev => ({
-      ...prev,
-      [currentUser]: {
-        ...prev[currentUser],
-        [id]: rating,
-      },
-    }));
+    // Optimistically update UI
+    setUserTraditionRatings(prev => ({ ...prev, [id]: rating }));
 
-    // Update userRatings for display
-    setUserRatings({ ...userRatings, [id]: rating });
+    // Update backend
+    const success = await submitRating(currentUser.id, id, rating);
     
-    // Update community rating
-    setTraditions((prev) =>
-      prev.map((t) => {
-        if (t.id === id) {
-          // If this is the first rating
-          if (t.totalRatings === 0) {
-            return {
-              ...t,
-              averageRating: rating,
-              totalRatings: 1,
-            };
-          }
-          // Update average with new rating
-          const newTotal = t.totalRatings + 1;
-          const newAverage = (t.averageRating * t.totalRatings + rating) / newTotal;
-          return {
-            ...t,
-            averageRating: newAverage,
-            totalRatings: newTotal,
-          };
-        }
-        return t;
-      })
-    );
+    if (!success) {
+      // Revert on error
+      const { [id]: _, ...rest } = userTraditionRatings;
+      setUserTraditionRatings(rest);
+      alert('Failed to submit rating. Please try again.');
+      return;
+    }
+
+    // Reload traditions to get updated stats
+    await loadTraditions();
   };
 
-  const handleDifficultyRate = (id: string, difficulty: number) => {
+  const handleDifficultyRate = async (id: string, difficulty: number) => {
     if (!currentUser) return;
     
     // Check if user has completed this tradition
-    const userCompleted = userCompletedTraditions[currentUser] || new Set<string>();
-    if (!userCompleted.has(id)) {
+    if (!userCompletedTraditions.has(id)) {
       // User hasn't completed this tradition, don't allow rating
       return;
     }
     
     // Check if user has already rated difficulty for this tradition
-    const userDifficultyRatingsForUser = userTraditionDifficultyRatings[currentUser] || {};
-    if (userDifficultyRatingsForUser[id] !== undefined) {
+    if (userTraditionDifficultyRatings[id] !== undefined) {
       // User has already rated difficulty, don't allow duplicate rating
       return;
     }
 
-    // Store the difficulty rating for this user
-    setUserTraditionDifficultyRatings(prev => ({
-      ...prev,
-      [currentUser]: {
-        ...prev[currentUser],
-        [id]: difficulty,
-      },
-    }));
+    // Optimistically update UI
+    setUserTraditionDifficultyRatings(prev => ({ ...prev, [id]: difficulty }));
+
+    // Update backend
+    const success = await submitDifficultyRating(currentUser.id, id, difficulty);
     
-    // Update community difficulty rating
-    setTraditions((prev) =>
-      prev.map((t) => {
-        if (t.id === id) {
-          // If this is the first difficulty rating
-          if (t.totalDifficultyRatings === 0) {
-            return {
-              ...t,
-              averageDifficulty: difficulty,
-              totalDifficultyRatings: 1,
-            };
-          }
-          // Update average with new difficulty rating
-          const newTotal = t.totalDifficultyRatings + 1;
-          const newAverage = (t.averageDifficulty * t.totalDifficultyRatings + difficulty) / newTotal;
-          return {
-            ...t,
-            averageDifficulty: newAverage,
-            totalDifficultyRatings: newTotal,
-          };
-        }
-        return t;
-      })
-    );
+    if (!success) {
+      // Revert on error
+      const { [id]: _, ...rest } = userTraditionDifficultyRatings;
+      setUserTraditionDifficultyRatings(rest);
+      alert('Failed to submit difficulty rating. Please try again.');
+      return;
+    }
+
+    // Reload traditions to get updated stats
+    await loadTraditions();
   };
 
-  const handleAddCustom = (name: string, description: string) => {
-    const newTradition: Tradition = {
-      id: `custom-${nextId}`,
-      name,
-      description,
-      averageRating: 0,
-      totalRatings: 0,
-      averageDifficulty: 0,
-      totalDifficultyRatings: 0,
-      completions: 0,
-    };
-    setTraditions([...traditions, newTradition]);
-    setNextId(nextId + 1);
+  const handleAddCustom = async (name: string, description: string) => {
+    try {
+      const userId = currentUser?.id;
+      const newTradition = await createTradition(name, description, userId);
+      
+      if (newTradition) {
+        // Reload traditions to get the new one with stats
+        await loadTraditions();
+      } else {
+        alert('Failed to create tradition. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error creating tradition:', error);
+      alert('Failed to create tradition. Please try again.');
+    }
   };
 
-  const userCompletedCount = currentUser 
-    ? (userCompletedTraditions[currentUser]?.size ?? 0)
-    : 0;
-  const progressPercentage = currentUser 
+  const userCompletedCount = userCompletedTraditions.size;
+  const progressPercentage = traditions.length > 0 
     ? (userCompletedCount / traditions.length) * 100
     : 0;
 
@@ -330,7 +269,7 @@ export default function Home() {
                 </div>
                 {currentUser ? (
                   <div className="flex items-center gap-3">
-                    <span className="text-sm opacity-90">Logged in as: {currentUser}</span>
+                    <span className="text-sm opacity-90">Logged in as: {currentUsername}</span>
                     <Button
                       onClick={handleLogout}
                       variant="outline"
@@ -394,22 +333,17 @@ export default function Home() {
             </div>
 
             <div className="grid gap-6">
-              {traditions.map((tradition) => {
-                const userRatingForTradition = currentUser 
-                  ? (userTraditionRatings[currentUser]?.[tradition.id] ?? null)
-                  : null;
-                const hasRated = currentUser 
-                  ? (userTraditionRatings[currentUser]?.[tradition.id] !== undefined)
-                  : false;
-                const userDifficultyRating = currentUser
-                  ? (userTraditionDifficultyRatings[currentUser]?.[tradition.id] ?? null)
-                  : null;
-                const hasRatedDifficulty = currentUser
-                  ? (userTraditionDifficultyRatings[currentUser]?.[tradition.id] !== undefined)
-                  : false;
-                const userCompleted = currentUser
-                  ? (userCompletedTraditions[currentUser]?.has(tradition.id) ?? false)
-                  : false;
+              {loading ? (
+                <div className="text-center py-8 text-muted-foreground">Loading traditions...</div>
+              ) : traditions.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">No traditions found.</div>
+              ) : (
+                traditions.map((tradition) => {
+                  const userRatingForTradition = userTraditionRatings[tradition.id] ?? null;
+                  const hasRated = userTraditionRatings[tradition.id] !== undefined;
+                  const userDifficultyRating = userTraditionDifficultyRatings[tradition.id] ?? null;
+                  const hasRatedDifficulty = userTraditionDifficultyRatings[tradition.id] !== undefined;
+                  const userCompleted = userCompletedTraditions.has(tradition.id);
                 
                 return (
                   <TraditionCard
@@ -427,7 +361,8 @@ export default function Home() {
                     onDifficultyRate={handleDifficultyRate}
                   />
                 );
-              })}
+                })
+              )}
             </div>
           </div>
 
